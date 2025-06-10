@@ -133,16 +133,6 @@ make dev
 make clean
 ```
 
-### Releasing
-The project uses GitHub Actions for automated builds and releases:
-
-1. **Create a tag**: `git tag v1.0.0`
-2. **Push the tag**: `git push origin v1.0.0`
-3. **GitHub Actions will**:
-   - Build binaries for all platforms
-   - Create a GitHub release
-   - Attach all binaries to the release
-
 ## Requirements
 
 - Go 1.23+ (for building)
