@@ -1,0 +1,171 @@
+name: Build Workshop
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release'
+        required: true
+
+jobs:
+  build:
+    name: Build Workshop
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Linux builds
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: 386
+          - os: linux
+            arch: arm64
+          - os: linux
+            arch: arm
+            arm: 7
+          
+          # macOS builds
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+          
+          # Windows builds
+          - os: windows
+            arch: amd64
+          - os: windows
+            arch: 386
+          - os: windows
+            arch: arm64
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          check-latest: true
+      
+      - name: Install dependencies
+        run: go mod download
+      
+      - name: Set binary name
+        id: binary-name
+        run: |
+          # Base name for the binary
+          BASE_NAME="workshop"
+          
+          # Add OS and architecture to the name
+          FULL_NAME="${BASE_NAME}-${{ matrix.os }}-${{ matrix.arch }}"
+          
+          # Add ARM version suffix if specified
+          if [ "${{ matrix.arm }}" != "" ]; then
+            FULL_NAME="${FULL_NAME}v${{ matrix.arm }}"
+          fi
+          
+          # Add .exe extension for Windows
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            FULL_NAME="${FULL_NAME}.exe"
+          fi
+          
+          echo "BINARY_NAME=${FULL_NAME}" >> $GITHUB_ENV
+          echo "ARTIFACT_NAME=${FULL_NAME}" >> $GITHUB_ENV
+        shell: bash
+      
+      - name: Build Workshop
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          GOARM: ${{ matrix.arm }}
+        run: |
+          # Debug information
+          echo "Building for $GOOS/$GOARCH as ${{ env.BINARY_NAME }}"
+          
+          # Build with version information
+          VERSION=$(git describe --tags --always)
+          COMMIT=$(git rev-parse HEAD)
+          BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          
+          # Build the workshop tool
+          go build \
+            -o ${{ env.BINARY_NAME }} \
+            -v \
+            -ldflags="-X 'main.version=${VERSION}' -X 'main.commit=${COMMIT}' -X 'main.buildTime=${BUILD_TIME}' -s -w" \
+            .
+          
+          # Verify the binary exists
+          ls -la ${{ env.BINARY_NAME }}
+        shell: bash
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.BINARY_NAME }}
+
+  # Create a release when a tag is pushed
+  release:
+    name: Create Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: |
+          echo "Contents of artifacts directory:"
+          find artifacts -type f | sort
+
+      - name: Create Release
+        id: create-release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Workshop ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: artifacts/**
+          body: |
+            ## Workshop Steam Workshop Downloader ${{ github.ref_name }}
+            
+            A simple CLI tool to download Steam Workshop items using SteamCMD.
+            
+            ### Quick Start
+            1. Download the binary for your platform below
+            2. Run `workshop install` to set up SteamCMD
+            3. Download workshop items with `workshop download <url>`
+            
+            ### Binaries
+            - **Linux**: `workshop-linux-amd64`, `workshop-linux-arm64`, `workshop-linux-386`, `workshop-linux-armv7`
+            - **macOS**: `workshop-darwin-amd64` (Intel), `workshop-darwin-arm64` (Apple Silicon)
+            - **Windows**: `workshop-windows-amd64.exe`, `workshop-windows-386.exe`, `workshop-windows-arm64.exe`
+            
+            ### Usage
+            ```bash
+            # Install SteamCMD
+            workshop install
+            
+            # Download workshop items
+            workshop download https://steamcommunity.com/sharedfiles/filedetails/?id=2503622437
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
