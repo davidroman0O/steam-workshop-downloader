@@ -40,16 +40,18 @@ func init() {
 	rootCmd.AddCommand(downloadCmd)
 
 	downloadCmd.Flags().StringP("app-id", "a", "", "Steam App ID (required if not providing URL)")
-	downloadCmd.Flags().StringP("username", "u", "", "Steam username for private items")
-	downloadCmd.Flags().StringP("password", "p", "", "Steam password for private items")
 	downloadCmd.Flags().BoolP("extract", "e", true, "Extract downloaded files to output directory")
 	downloadCmd.Flags().StringP("output", "o", "", "Output directory (default: configured download directory)")
+	downloadCmd.Flags().BoolP("debug", "d", false, "Show debug information including SteamCMD command")
+	downloadCmd.Flags().StringP("username", "u", "", "Steam username to use cached credentials (use after 'workshop login')")
+	downloadCmd.Flags().BoolP("force", "f", false, "Force re-download even if item already exists")
 
 	viper.BindPFlag("app_id", downloadCmd.Flags().Lookup("app-id"))
-	viper.BindPFlag("username", downloadCmd.Flags().Lookup("username"))
-	viper.BindPFlag("password", downloadCmd.Flags().Lookup("password"))
 	viper.BindPFlag("extract", downloadCmd.Flags().Lookup("extract"))
 	viper.BindPFlag("output", downloadCmd.Flags().Lookup("output"))
+	viper.BindPFlag("debug", downloadCmd.Flags().Lookup("debug"))
+	viper.BindPFlag("username", downloadCmd.Flags().Lookup("username"))
+	viper.BindPFlag("force_download", downloadCmd.Flags().Lookup("force"))
 }
 
 func downloadWorkshopItem(args []string) error {
@@ -76,20 +78,50 @@ func downloadWorkshopItem(args []string) error {
 
 	fmt.Printf("Downloading workshop item %s for app %s...\n", workshopID, appID)
 
-	// Download the workshop item
-	var item *steamcmd.WorkshopItem
-	username := viper.GetString("username")
-	password := viper.GetString("password")
+	// Check if item already exists
+	force := viper.GetBool("force_download")
+	exists, existingPath, err := client.CheckWorkshopItemExists(appID, workshopID)
+	if err != nil {
+		fmt.Printf("Warning: Failed to check if item exists: %v\n", err)
+	} else if exists && !force {
+		fmt.Printf("✅ Workshop item already exists at: %s\n", existingPath)
 
-	if username != "" && password != "" {
-		fmt.Println("Using Steam credentials for download...")
-		item, err = client.DownloadWorkshopItemWithAuth(appID, workshopID, username, password)
-	} else {
-		fmt.Println("Using anonymous download...")
-		item, err = client.DownloadWorkshopItem(appID, workshopID)
+		// Calculate size if possible
+		dirSize := getDirSize(existingPath)
+		if dirSize > 0 {
+			fmt.Printf("📁 Directory size: %s\n", formatBytes(dirSize))
+		}
+
+		fmt.Println("\n💡 Use --force flag to re-download, or use --output to extract to a different location.")
+		return nil
+	} else if exists && force {
+		fmt.Printf("⚠️  Workshop item exists at %s but --force flag used, re-downloading...\n", existingPath)
 	}
 
+	// Download the workshop item
+	var item *steamcmd.WorkshopItem
+	debug := viper.GetBool("debug")
+
+	// Show debug info if requested
+	if debug {
+		fmt.Printf("Debug: SteamCMD command would be: %s\n", client.GetDebugCommand(appID, workshopID))
+		fmt.Println("Debug: You can run this command manually to test SteamCMD directly")
+		fmt.Println()
+	}
+
+	fmt.Println("Attempting download...")
+	item, err = client.DownloadWorkshopItem(appID, workshopID, viper.GetString("username"))
+
 	if err != nil {
+		// Check if this might be an authentication issue
+		if strings.Contains(err.Error(), "No subscription") ||
+			strings.Contains(err.Error(), "login") ||
+			strings.Contains(err.Error(), "authentication") {
+			fmt.Println()
+			fmt.Println("❌ Download failed - this might require Steam authentication.")
+			fmt.Println("💡 Try logging in first with: workshop login")
+			fmt.Println("   Then try downloading again.")
+		}
 		return fmt.Errorf("download failed: %w", err)
 	}
 
@@ -347,4 +379,25 @@ func ValidateAppID(id string) error {
 	}
 
 	return nil
+}
+
+// getDirSize calculates the total size of a directory recursively
+func getDirSize(path string) int64 {
+	var size int64
+
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Continue on errors
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+
+	if err != nil {
+		return 0
+	}
+
+	return size
 }
